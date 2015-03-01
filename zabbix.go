@@ -21,10 +21,7 @@ type Metric struct {
 
 // Metric class constructor.
 func NewMetric(host, key, value string, clock ...int64) *Metric {
-	m := new(Metric)
-	m.Host = host
-	m.Key = key
-	m.Value = value
+	m := &Metric{Host: host, Key: key, Value: value}
 	// use current time, if `clock` is not specified
 	if m.Clock = time.Now().Unix(); len(clock) > 0 {
 		m.Clock = int64(clock[0])
@@ -41,9 +38,7 @@ type Packet struct {
 
 // Packet class cunstructor.
 func NewPacket(data []*Metric, clock ...int64) *Packet {
-	p := new(Packet)
-	p.Request = `sender data`
-	p.Data = data
+	p := &Packet{Request: `sender data`, Data: data}
 	// use current time, if `clock` is not specified
 	if p.Clock = time.Now().Unix(); len(clock) > 0 {
 		p.Clock = int64(clock[0])
@@ -52,7 +47,7 @@ func NewPacket(data []*Metric, clock ...int64) *Packet {
 }
 
 // DataLen Packet class method, return 8 bytes with packet length in little endian order.
-func (p Packet) DataLen() []byte {
+func (p *Packet) DataLen() []byte {
 	dataLen := make([]byte, 8)
 	JSONData, _ := json.Marshal(p)
 	binary.LittleEndian.PutUint32(dataLen, uint32(len(JSONData)))
@@ -67,19 +62,17 @@ type Sender struct {
 
 // Sender class constructor.
 func NewSender(host string, port int) *Sender {
-	s := new(Sender)
-	s.Host = host
-	s.Port = port
+	s := &Sender{Host: host, Port: port}
 	return s
 }
 
 // Method Sender class, return zabbix header.
-func (s Sender) getHeader() []byte {
+func (s *Sender) getHeader() []byte {
 	return []byte("ZBXD\x01")
 }
 
 // Method Sender class, resolve uri by name:port.
-func (s Sender) getTCPAddr() *net.TCPAddr {
+func (s *Sender) getTCPAddr() *net.TCPAddr {
 	// format: hostname:port
 	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
 
@@ -95,7 +88,7 @@ func (s Sender) getTCPAddr() *net.TCPAddr {
 }
 
 // Method Sender class, make connection to uri.
-func (s Sender) connect() *net.TCPConn {
+func (s *Sender) connect() *net.TCPConn {
 	// Open connection to zabbix host
 	iaddr := s.getTCPAddr()
 	conn, err := net.DialTCP("tcp", nil, iaddr)
@@ -109,7 +102,7 @@ func (s Sender) connect() *net.TCPConn {
 }
 
 // Method Sender class, read data from connection.
-func (s Sender) read(conn *net.TCPConn) []byte {
+func (s *Sender) read(conn *net.TCPConn) []byte {
 	res := make([]byte, 1024)
 	res, err := ioutil.ReadAll(conn)
 	if err != nil {
@@ -121,13 +114,12 @@ func (s Sender) read(conn *net.TCPConn) []byte {
 }
 
 // Method Sender class, send packet to zabbix.
-func (s Sender) Send(packet *Packet) []byte {
+func (s *Sender) Send(packet *Packet) []byte {
 	conn := s.connect()
 	defer conn.Close()
 
 	dataPacket, _ := json.Marshal(packet)
 
-	// Make zabbix header
 	/*
 	   fmt.Printf("HEADER: % x (%s)\n", s.getHeader(), s.getHeader())
 	   fmt.Printf("DATALEN: % x, %d byte\n", packet.DataLen(), len(packet.DataLen()))
