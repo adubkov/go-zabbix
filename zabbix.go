@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
-	"os"
 	"time"
 )
 
@@ -72,50 +71,75 @@ func (s *Sender) getHeader() []byte {
 }
 
 // Method Sender class, resolve uri by name:port.
-func (s *Sender) getTCPAddr() *net.TCPAddr {
+func (s *Sender) getTCPAddr() (iaddr *net.TCPAddr, err error) {
 	// format: hostname:port
 	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
 
 	// Resolve hostname:port to ip:port
-	iaddr, err := net.ResolveTCPAddr("tcp", addr)
-
+	iaddr, err = net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
-		fmt.Printf("Connection failed: %s", err.Error())
-		os.Exit(1)
+		err = fmt.Errorf("Connection failed: %s", err.Error())
+		return
 	}
 
-	return iaddr
+	return
 }
 
 // Method Sender class, make connection to uri.
-func (s *Sender) connect() *net.TCPConn {
-	// Open connection to zabbix host
-	iaddr := s.getTCPAddr()
-	conn, err := net.DialTCP("tcp", nil, iaddr)
+func (s *Sender) connect() (conn *net.TCPConn, err error) {
 
-	if err != nil {
-		fmt.Printf("Connection failed: %s", err.Error())
-		os.Exit(1)
+	type DialResp struct {
+		Conn  *net.TCPConn
+		Error error
 	}
 
-	return conn
+	// Open connection to zabbix host
+	iaddr, err := s.getTCPAddr()
+	if err != nil {
+		return
+	}
+
+	// dial tcp and handle timeouts
+	ch := make(chan DialResp)
+
+	go func() {
+		conn, err = net.DialTCP("tcp", nil, iaddr)
+		ch <- DialResp{Conn: conn, Error: err}
+	}()
+
+	select {
+	case <-time.After(5 * time.Second):
+		err = fmt.Errorf("Connection Timeout")
+	case resp := <-ch:
+		if resp.Error != nil {
+			err = resp.Error
+			break
+		}
+
+		conn = resp.Conn
+	}
+
+	return
 }
 
 // Method Sender class, read data from connection.
-func (s *Sender) read(conn *net.TCPConn) []byte {
-	res := make([]byte, 1024)
-	res, err := ioutil.ReadAll(conn)
+func (s *Sender) read(conn *net.TCPConn) (res []byte, err error) {
+	res = make([]byte, 1024)
+	res, err = ioutil.ReadAll(conn)
 	if err != nil {
-		fmt.Printf("Error whule receiving the data: %s", err.Error())
-		os.Exit(1)
+		err = fmt.Errorf("Error whule receiving the data: %s", err.Error())
+		return
 	}
 
-	return res
+	return
 }
 
 // Method Sender class, send packet to zabbix.
-func (s *Sender) Send(packet *Packet) []byte {
-	conn := s.connect()
+func (s *Sender) Send(packet *Packet) (res []byte, err error) {
+	conn, err := s.connect()
+	if err != nil {
+		return
+	}
 	defer conn.Close()
 
 	dataPacket, _ := json.Marshal(packet)
@@ -131,15 +155,16 @@ func (s *Sender) Send(packet *Packet) []byte {
 	buffer = append(buffer, dataPacket...)
 
 	// Sent packet to zabbix
-	_, err := conn.Write(buffer)
+	_, err = conn.Write(buffer)
 	if err != nil {
-		fmt.Printf("Error while sending the data: %s", err.Error())
-		os.Exit(1)
+		err = fmt.Errorf("Error while sending the data: %s", err.Error())
+		return
 	}
 
-	res := s.read(conn)
+	res, err = s.read(conn)
+
 	/*
 	   fmt.Printf("RESPONSE: %s\n", string(res))
 	*/
-	return res
+	return
 }
