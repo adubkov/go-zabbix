@@ -1,3 +1,4 @@
+// Taken from github.com/blacked/go-zabbix (discontinued)
 // Package implement zabbix sender protocol for send metrics to zabbix.
 package zabbix
 
@@ -10,19 +11,25 @@ import (
 	"time"
 )
 
+const (
+	DEFAULT_TIMEOUT = 15 * time.Second
+)
+
 // Metric class.
 type Metric struct {
-	Host  string `json:"host"`
-	Key   string `json:"key"`
-	Value string `json:"value"`
-	Clock int64  `json:"clock"`
+	Host   string `json:"host"`
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+	Clock  int64  `json:"clock,omitempty"`
+	Active bool   `json:"-"`
 }
 
 // Metric class constructor.
-func NewMetric(host, key, value string, clock ...int64) *Metric {
-	m := &Metric{Host: host, Key: key, Value: value}
-	// use current time, if `clock` is not specified
-	if m.Clock = time.Now().Unix(); len(clock) > 0 {
+// agentActive should be set to true if we are sending to a Zabbix Agent (active) item
+func NewMetric(host, key, value string, agentActive bool, clock ...int64) *Metric {
+	m := &Metric{Host: host, Key: key, Value: value, Active: agentActive}
+	// do not send clock if not defined
+	if len(clock) > 0 {
 		m.Clock = int64(clock[0])
 	}
 	return m
@@ -32,14 +39,22 @@ func NewMetric(host, key, value string, clock ...int64) *Metric {
 type Packet struct {
 	Request string    `json:"request"`
 	Data    []*Metric `json:"data"`
-	Clock   int64     `json:"clock"`
+	Clock   int64     `json:"clock,omitempty"`
 }
 
 // Packet class cunstructor.
-func NewPacket(data []*Metric, clock ...int64) *Packet {
-	p := &Packet{Request: `sender data`, Data: data}
-	// use current time, if `clock` is not specified
-	if p.Clock = time.Now().Unix(); len(clock) > 0 {
+func NewPacket(data []*Metric, agentActive bool, clock ...int64) *Packet {
+	var request string
+	if agentActive {
+		request = "agent data"
+	} else {
+		request = "sender data"
+	}
+
+	p := &Packet{Request: request, Data: data}
+
+	// do not send clock if not defined
+	if len(clock) > 0 {
 		p.Clock = int64(clock[0])
 	}
 	return p
@@ -55,17 +70,27 @@ func (p *Packet) DataLen() []byte {
 
 // Sender class.
 type Sender struct {
-	Host string
-	Port int
+	Host    string
+	Port    int
+	Timeout time.Duration
 }
 
 // Sender class constructor.
-func NewSender(host string, port int) *Sender {
-	s := &Sender{Host: host, Port: port}
+// Optional timeout parameter
+func NewSender(host string, port int, timeout_opt ...time.Duration) *Sender {
+	var timeout time.Duration
+	if len(timeout_opt) == 0 {
+		// Default timeout value
+		timeout = DEFAULT_TIMEOUT
+	} else {
+		timeout = timeout_opt[0]
+	}
+	s := &Sender{Host: host, Port: port, Timeout: timeout}
 	return s
 }
 
 // Method Sender class, return zabbix header.
+// https://www.zabbix.com/documentation/4.0/manual/appendix/protocols/header_datalen
 func (s *Sender) getHeader() []byte {
 	return []byte("ZBXD\x01")
 }
@@ -108,8 +133,8 @@ func (s *Sender) connect() (conn *net.TCPConn, err error) {
 	}()
 
 	select {
-	case <-time.After(5 * time.Second):
-		err = fmt.Errorf("Connection Timeout")
+	case <-time.After(s.Timeout):
+		err = fmt.Errorf("connection timeout (%v)", s.Timeout)
 	case resp := <-ch:
 		if resp.Error != nil {
 			err = resp.Error
@@ -134,6 +159,35 @@ func (s *Sender) read(conn *net.TCPConn) (res []byte, err error) {
 	return
 }
 
+// SendMetrics send an array of metrics, making different packets for
+// trapper and active items.
+// The response for trapper metrics is in the first element of the res array and err array
+// Response for active metrics is in the second element of the res array and error array
+func (s *Sender) SendMetrics(metrics []*Metric) (resActive []byte, errActive error, resTrapper []byte, errTrapper error) {
+	var trapperMetrics []*Metric
+	var activeMetrics []*Metric
+
+	for i := 0; i < len(metrics); i++ {
+		if metrics[i].Active {
+			activeMetrics = append(activeMetrics, metrics[i])
+		} else {
+			trapperMetrics = append(trapperMetrics, metrics[i])
+		}
+	}
+
+	if len(trapperMetrics) > 0 {
+		packetTrapper := NewPacket(trapperMetrics, false)
+		resTrapper, errTrapper = s.Send(packetTrapper)
+	}
+
+	if len(activeMetrics) > 0 {
+		packetActive := NewPacket(activeMetrics, true)
+		resActive, errActive = s.Send(packetActive)
+	}
+
+	return
+}
+
 // Method Sender class, send packet to zabbix.
 func (s *Sender) Send(packet *Packet) (res []byte, err error) {
 	conn, err := s.connect()
@@ -143,12 +197,6 @@ func (s *Sender) Send(packet *Packet) (res []byte, err error) {
 	defer conn.Close()
 
 	dataPacket, _ := json.Marshal(packet)
-
-	/*
-	   fmt.Printf("HEADER: % x (%s)\n", s.getHeader(), s.getHeader())
-	   fmt.Printf("DATALEN: % x, %d byte\n", packet.DataLen(), len(packet.DataLen()))
-	   fmt.Printf("BODY: %s\n", string(dataPacket))
-	*/
 
 	// Fill buffer
 	buffer := append(s.getHeader(), packet.DataLen()...)
@@ -163,8 +211,5 @@ func (s *Sender) Send(packet *Packet) (res []byte, err error) {
 
 	res, err = s.read(conn)
 
-	/*
-	   fmt.Printf("RESPONSE: %s\n", string(res))
-	*/
 	return
 }

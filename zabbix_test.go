@@ -1,22 +1,18 @@
 package zabbix
 
-import "testing"
-
-const (
-	hostname   = `somehost.com`
-	zabbixhost = `172.30.30.30`
-	zabbixport = 1234
+import (
+	"fmt"
+	"testing"
 )
 
-func TestSend(t *testing.T) {
-	sender := NewSender(zabbixhost, zabbixport)
-
-	metrics := []*Metric{NewMetric(hostname, `key`, `value`)}
-	_, err := sender.Send(NewPacket(metrics))
-
-	if err == nil {
-		t.Error("sending should have failed")
+func TestSendMetric(t *testing.T) {
+	m := NewMetric("zabbixAgent1", "active", "13", true)
+	m2 := NewMetric("zabbixAgent1", "trapper", "12", false)
+	s := NewSender("172.17.0.3", 10051)
+	res, err := s.SendMetrics([]*Metric{m, m2})
+	if err[0] != nil || err[1] != nil {
+		t.Fatalf("erroe enviando la metrica: %v", err)
 	}
-
-	t.Logf("error: %v", err.Error())
+	fmt.Println("trapper:", string(res[0]))
+	fmt.Println("active:", string(res[1]))
 }
