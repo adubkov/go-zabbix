@@ -7,25 +7,30 @@ Example:
 package main
 
 import (
-    "time"
-    . "github.com/blacked/go-zabbix"
+	"fmt"
+	"time"
+
+	"github.com/adrianlzt/go-zabbix"
 )
 
 const (
-    defaultHost  = `localhost`
-    defaultPort  = 10051
+	defaultHost  = `localhost`
+	defaultPort = 10051
+	agentActive = true
+	trapper     = false
 )
 
 func main() {
-    var metrics []*Metric
-    metrics = append(metrics, NewMetric("localhost", "cpu", "1.22", time.Now().Unix()))
-    metrics = append(metrics, NewMetric("localhost", "status", "OK"))
+	var metrics []*zabbix.Metric
+	metrics = append(metrics, zabbix.NewMetric("localhost", "cpu", "1.22", agentActive, time.Now().Unix()))
+	metrics = append(metrics, zabbix.NewMetric("localhost", "status", "OK", agentActive))
+	metrics = append(metrics, zabbix.NewMetric("localhost", "someTrapper", "3.14", trapper))
 
-    // Create instance of Packet class
-    packet := NewPacket(metrics)
+	// Send metrics to zabbix
+	z := zabbix.NewSender(defaultHost, defaultPort)
+	resActive, errActive, resTrapper, errTrapper := z.SendMetrics(metrics)
 
-    // Send packet to zabbix
-    z := NewSender(defaultHost, defaultPort)
-    z.Send(packet)
+	fmt.Printf("Agent active, response=%s, error=%v\n", resActive, errActive)
+	fmt.Printf("Trapper, response=%s, error=%v\n", resTrapper, errTrapper)
 }
 ```

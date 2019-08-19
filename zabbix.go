@@ -1,5 +1,5 @@
+// Package zabbix implements the sender protocol to send values to zabbix
 // Taken from github.com/blacked/go-zabbix (discontinued)
-// Package implement zabbix sender protocol for send metrics to zabbix.
 package zabbix
 
 import (
@@ -8,11 +8,16 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
+	"strconv"
 	"time"
 )
 
 const (
-	DEFAULT_TIMEOUT = 15 * time.Second
+	defaultConnectTimeout = 5 * time.Second
+	defaultWriteTimeout   = 5 * time.Second
+	// A heavy loaded Zabbix server processing several metrics,
+	// containing LLDs, could take several seconds to respond
+	defaultReadTimeout = 15 * time.Second
 )
 
 // Metric class.
@@ -24,7 +29,7 @@ type Metric struct {
 	Active bool   `json:"-"`
 }
 
-// Metric class constructor.
+// NewMetric return a zabbix Metric with the values specified
 // agentActive should be set to true if we are sending to a Zabbix Agent (active) item
 func NewMetric(host, key, value string, agentActive bool, clock ...int64) *Metric {
 	m := &Metric{Host: host, Key: key, Value: value, Active: agentActive}
@@ -42,7 +47,7 @@ type Packet struct {
 	Clock   int64     `json:"clock,omitempty"`
 }
 
-// Packet class cunstructor.
+// NewPacket return a zabbix packet with a list of metrics
 func NewPacket(data []*Metric, agentActive bool, clock ...int64) *Packet {
 	var request string
 	if agentActive {
@@ -70,93 +75,55 @@ func (p *Packet) DataLen() []byte {
 
 // Sender class.
 type Sender struct {
-	Host    string
-	Port    int
-	Timeout time.Duration
+	Host           string
+	Port           int
+	ConnectTimeout time.Duration
+	ReadTimeout    time.Duration
+	WriteTimeout   time.Duration
 }
 
-// Sender class constructor.
-// Optional timeout parameter
-func NewSender(host string, port int, timeout_opt ...time.Duration) *Sender {
-	var timeout time.Duration
-	if len(timeout_opt) == 0 {
-		// Default timeout value
-		timeout = DEFAULT_TIMEOUT
-	} else {
-		timeout = timeout_opt[0]
+// NewSender return a sender object to send metrics using default values for timeouts
+func NewSender(host string, port int) *Sender {
+	return &Sender{
+		Host:           host,
+		Port:           port,
+		ConnectTimeout: defaultConnectTimeout,
+		ReadTimeout:    defaultReadTimeout,
+		WriteTimeout:   defaultWriteTimeout,
 	}
-	s := &Sender{Host: host, Port: port, Timeout: timeout}
-	return s
 }
 
-// Method Sender class, return zabbix header.
+// NewSenderTimeout return a sender object to send metrics defining values for timeouts
+func NewSenderTimeout(
+	host string,
+	port int,
+	connectTimeout time.Duration,
+	readTimeout time.Duration,
+	writeTimeout time.Duration,
+) *Sender {
+	return &Sender{
+		Host:           host,
+		Port:           port,
+		ConnectTimeout: connectTimeout,
+		ReadTimeout:    readTimeout,
+		WriteTimeout:   writeTimeout,
+	}
+}
+
+// getHeader return zabbix header.
 // https://www.zabbix.com/documentation/4.0/manual/appendix/protocols/header_datalen
 func (s *Sender) getHeader() []byte {
 	return []byte("ZBXD\x01")
 }
 
-// Method Sender class, resolve uri by name:port.
-func (s *Sender) getTCPAddr() (iaddr *net.TCPAddr, err error) {
-	// format: hostname:port
-	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
-
-	// Resolve hostname:port to ip:port
-	iaddr, err = net.ResolveTCPAddr("tcp", addr)
+// read data from connection.
+func (s *Sender) read(conn net.Conn) ([]byte, error) {
+	res, err := ioutil.ReadAll(conn)
 	if err != nil {
-		err = fmt.Errorf("Connection failed: %s", err.Error())
-		return
+		return res, fmt.Errorf("receiving data: %s", err.Error())
 	}
 
-	return
-}
-
-// Method Sender class, make connection to uri.
-func (s *Sender) connect() (conn *net.TCPConn, err error) {
-
-	type DialResp struct {
-		Conn  *net.TCPConn
-		Error error
-	}
-
-	// Open connection to zabbix host
-	iaddr, err := s.getTCPAddr()
-	if err != nil {
-		return
-	}
-
-	// dial tcp and handle timeouts
-	ch := make(chan DialResp)
-
-	go func() {
-		conn, err = net.DialTCP("tcp", nil, iaddr)
-		ch <- DialResp{Conn: conn, Error: err}
-	}()
-
-	select {
-	case <-time.After(s.Timeout):
-		err = fmt.Errorf("connection timeout (%v)", s.Timeout)
-	case resp := <-ch:
-		if resp.Error != nil {
-			err = resp.Error
-			break
-		}
-
-		conn = resp.Conn
-	}
-
-	return
-}
-
-// Method Sender class, read data from connection.
-func (s *Sender) read(conn *net.TCPConn) (res []byte, err error) {
-	res = make([]byte, 1024)
-	res, err = ioutil.ReadAll(conn)
-	if err != nil {
-		err = fmt.Errorf("Error whule receiving the data: %s", err.Error())
-		return
-	}
-
-	return
+	return res, nil
 }
 
 // SendMetrics send an array of metrics, making different packets for
@@ -185,14 +152,15 @@ func (s *Sender) SendMetrics(metrics []*Metric) (resActive []byte, errActive err
 		resActive, errActive = s.Send(packetActive)
 	}
 
-	return
+	return resActive, errActive, resTrapper, errTrapper
 }
 
-// Method Sender class, send packet to zabbix.
+// Send connects to Zabbix, send the data, return the response and close the connection
 func (s *Sender) Send(packet *Packet) (res []byte, err error) {
-	conn, err := s.connect()
+	// Timeout to resolve and connect to the server
+	conn, err := net.DialTimeout("tcp", s.Host+":"+strconv.Itoa(s.Port), s.ConnectTimeout)
 	if err != nil {
-		return
+		return res, fmt.Errorf("connecting to server (timeout=%v): %v", s.ConnectTimeout, err)
 	}
 	defer conn.Close()
 
@@ -202,14 +170,23 @@ func (s *Sender) Send(packet *Packet) (res []byte, err error) {
 	buffer := append(s.getHeader(), packet.DataLen()...)
 	buffer = append(buffer, dataPacket...)
 
-	// Sent packet to zabbix
+	// Write timeout
+	conn.SetWriteDeadline(time.Now().Add(s.WriteTimeout))
+
+	// Send packet to zabbix
 	_, err = conn.Write(buffer)
 	if err != nil {
-		err = fmt.Errorf("Error while sending the data: %s", err.Error())
-		return
+		return res, fmt.Errorf("sending the data (timeout=%v): %s", s.WriteTimeout, err.Error())
 	}
 
-	res, err = s.read(conn)
+	// Read timeout
+	conn.SetReadDeadline(time.Now().Add(s.ReadTimeout))
 
-	return
+	// Read response from server
+	res, err = s.read(conn)
+	if err != nil {
+		return res, fmt.Errorf("reading the response (timeout=%v): %s", s.ReadTimeout, err.Error())
+	}
+
+	return res, nil
 }
