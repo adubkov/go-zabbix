@@ -3,6 +3,7 @@
 package zabbix
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -42,9 +43,17 @@ func NewMetric(host, key, value string, agentActive bool, clock ...int64) *Metri
 
 // Packet class.
 type Packet struct {
-	Request string    `json:"request"`
-	Data    []*Metric `json:"data"`
-	Clock   int64     `json:"clock,omitempty"`
+	Request      string    `json:"request"`
+	Data         []*Metric `json:"data,omitempty"`
+	Clock        int64     `json:"clock,omitempty"`
+	Host         string    `json:"host,omitempty"`
+	HostMetadata string    `json:"host_metadata,omitempty"`
+}
+
+// Reponse is a response for autoregister method
+type Response struct {
+	Response string
+	Info     string
 }
 
 // NewPacket return a zabbix packet with a list of metrics
@@ -189,4 +198,60 @@ func (s *Sender) Send(packet *Packet) (res []byte, err error) {
 	}
 
 	return res, nil
+}
+
+// RegisterHost provides a register a Zabbix's host with Autoregister method.
+func (s *Sender) RegisterHost(host, hostmetada string) error {
+
+	p := &Packet{Request: "active checks", Host: host, HostMetadata: hostmetada}
+
+	res, err := s.Send(p)
+	if err != nil {
+		return fmt.Errorf("sending packet: %v", err)
+	}
+
+	header := res[:4]
+	//length := res[4:13]
+	data := res[13:]
+
+	if bytes.Equal(header, s.getHeader()) {
+		return fmt.Errorf("response header is not valid")
+	}
+
+	response := Response{}
+	if err := json.Unmarshal(data, &response); err != nil {
+		fmt.Errorf("zabbix response is not valid: %v", err)
+	}
+
+	if response.Response == "success" {
+		return nil
+	}
+
+	// The autoregister process always return fail the first time
+	// We retry the process to get success response to verify the host registration properly
+	p = &Packet{Request: "active checks", Host: host, HostMetadata: hostmetada}
+
+	res, err = s.Send(p)
+	if err != nil {
+		return fmt.Errorf("sending packet: %v", err)
+	}
+
+	header = res[:4]
+	//length := res[4:13]
+	data = res[13:]
+
+	if bytes.Equal(header, s.getHeader()) {
+		return fmt.Errorf("response header is not valid")
+	}
+
+	response = Response{}
+	if err = json.Unmarshal(data, &response); err != nil {
+		fmt.Errorf("zabbix response is not valid: %v", err)
+	}
+
+	if response.Response == "failed" {
+		return fmt.Errorf("autoregistration failed, verify hostmetadata")
+	}
+
+	return nil
 }
