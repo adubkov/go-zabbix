@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -54,6 +55,51 @@ type Packet struct {
 type Response struct {
 	Response string
 	Info     string
+}
+
+type ResponseInfo struct {
+	Processed int
+	Failed    int
+	Total     int
+	Spent     time.Duration
+}
+
+func (r *Response) GetInfo() (*ResponseInfo, error) {
+	ret := ResponseInfo{}
+	if r.Response != "success" {
+		return &ret, fmt.Errorf("Can not process info if response not Success (%s)", r.Response)
+	}
+
+	sp := strings.Split(r.Info, ";")
+	if len(sp) != 4 {
+		return &ret, fmt.Errorf("Error in splited data, expected 4 got %d for data (%s)", len(sp), r.Info)
+	}
+	for _, s := range sp {
+		sp2 := strings.Split(s, ":")
+		if len(sp2) != 2 {
+			return &ret, fmt.Errorf("Error in splited data, expected 2 got %d for data (%s)", len(sp2), s)
+		}
+		key := strings.TrimSpace(sp2[0])
+		value := strings.TrimSpace(sp2[1])
+		var err error
+		switch key {
+		case "processed":
+			ret.Processed, err = strconv.Atoi(value)
+		case "failed":
+			ret.Failed, err = strconv.Atoi(value)
+		case "total":
+			ret.Total, err = strconv.Atoi(value)
+		case "seconds spent":
+			var f float64
+			if f, err = strconv.ParseFloat(value, 64); err != nil {
+				return &ret, fmt.Errorf("Error in parsing seconds spent value [%s] error: %s", value, err)
+			}
+			ret.Spent = time.Duration(int64(f * 1000000000.0))
+		}
+
+	}
+
+	return &ret, nil
 }
 
 // NewPacket return a zabbix packet with a list of metrics
@@ -139,7 +185,7 @@ func (s *Sender) read(conn net.Conn) ([]byte, error) {
 // trapper and active items.
 // The response for trapper metrics is in the first element of the res array and err array
 // Response for active metrics is in the second element of the res array and error array
-func (s *Sender) SendMetrics(metrics []*Metric) (resActive []byte, errActive error, resTrapper []byte, errTrapper error) {
+func (s *Sender) SendMetrics(metrics []*Metric) (resActive Response, errActive error, resTrapper Response, errTrapper error) {
 	var trapperMetrics []*Metric
 	var activeMetrics []*Metric
 
@@ -152,14 +198,53 @@ func (s *Sender) SendMetrics(metrics []*Metric) (resActive []byte, errActive err
 	}
 
 	if len(trapperMetrics) > 0 {
+
 		packetTrapper := NewPacket(trapperMetrics, false)
-		resTrapper, errTrapper = s.Send(packetTrapper)
+		res, err := s.Send(packetTrapper)
+		if err != nil {
+			errTrapper = err
+			goto next
+		}
+		header := res[:4]
+		//length := res[4:13]
+		data := res[13:]
+
+		if bytes.Equal(header, s.getHeader()) {
+			errTrapper = fmt.Errorf("response header is not valid")
+			goto next
+		}
+
+		if err := json.Unmarshal(data, &resTrapper); err != nil {
+			errTrapper = fmt.Errorf("zabbix response is not valid: %v", err)
+		}
+
 	}
+
+next:
 
 	if len(activeMetrics) > 0 {
 		packetActive := NewPacket(activeMetrics, true)
-		resActive, errActive = s.Send(packetActive)
+		res, err := s.Send(packetActive)
+		if err != nil {
+			errActive = err
+			goto last
+		}
+
+		header := res[:4]
+		//length := res[4:13]
+		data := res[13:]
+
+		if bytes.Equal(header, s.getHeader()) {
+			errActive = fmt.Errorf("response header is not valid")
+			goto last
+		}
+
+		if err := json.Unmarshal(data, &resActive); err != nil {
+			errActive = fmt.Errorf("zabbix response is not valid: %v", err)
+		}
 	}
+
+last:
 
 	return resActive, errActive, resTrapper, errTrapper
 }
@@ -194,9 +279,9 @@ func (s *Sender) Send(packet *Packet) (res []byte, err error) {
 	// Read response from server
 	res, err = s.read(conn)
 	if err != nil {
+
 		return res, fmt.Errorf("reading the response (timeout=%v): %s", s.ReadTimeout, err.Error())
 	}
-
 	return res, nil
 }
 
