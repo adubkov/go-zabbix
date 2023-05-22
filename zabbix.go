@@ -101,6 +101,7 @@ func (s *Sender) connect() (conn *net.TCPConn, err error) {
 
 	// dial tcp and handle timeouts
 	ch := make(chan DialResp)
+	defer close(ch)
 
 	go func() {
 		conn, err = net.DialTCP("tcp", nil, iaddr)
