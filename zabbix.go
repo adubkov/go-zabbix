@@ -88,7 +88,7 @@ func (s *Sender) connect() (tcpConn *net.TCPConn, err error) {
 func (s *Sender) read(conn *net.TCPConn) (res []byte, err error) {
 	res, err = io.ReadAll(conn)
 	if err != nil {
-		err = fmt.Errorf("error whule receiving the data: %s", err.Error())
+		err = fmt.Errorf("error while receiving the data: %s", err.Error())
 		return
 	}
 
