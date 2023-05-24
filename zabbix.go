@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"time"
 )
@@ -70,64 +70,25 @@ func (s *Sender) getHeader() []byte {
 	return []byte("ZBXD\x01")
 }
 
-// Method Sender class, resolve uri by name:port.
-func (s *Sender) getTCPAddr() (iaddr *net.TCPAddr, err error) {
-	// format: hostname:port
-	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
-
-	// Resolve hostname:port to ip:port
-	iaddr, err = net.ResolveTCPAddr("tcp", addr)
-	if err != nil {
-		err = fmt.Errorf("Connection failed: %s", err.Error())
-		return
-	}
-
-	return
-}
-
 // Method Sender class, make connection to uri.
-func (s *Sender) connect() (conn *net.TCPConn, err error) {
-
-	type DialResp struct {
-		Conn  *net.TCPConn
-		Error error
-	}
-
-	// Open connection to zabbix host
-	iaddr, err := s.getTCPAddr()
+func (s *Sender) connect() (tcpConn *net.TCPConn, err error) {
+	// parses addr as "hostname:port"
+	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
+	// resolves hostname, dials TCP and handles timeout
+	d := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := d.Dial("tcp", addr)
 	if err != nil {
 		return
 	}
-
-	// dial tcp and handle timeouts
-	ch := make(chan DialResp)
-
-	go func() {
-		conn, err = net.DialTCP("tcp", nil, iaddr)
-		ch <- DialResp{Conn: conn, Error: err}
-	}()
-
-	select {
-	case <-time.After(5 * time.Second):
-		err = fmt.Errorf("Connection Timeout")
-	case resp := <-ch:
-		if resp.Error != nil {
-			err = resp.Error
-			break
-		}
-
-		conn = resp.Conn
-	}
-
+	tcpConn, _ = conn.(*net.TCPConn)
 	return
 }
 
 // Method Sender class, read data from connection.
 func (s *Sender) read(conn *net.TCPConn) (res []byte, err error) {
-	res = make([]byte, 1024)
-	res, err = ioutil.ReadAll(conn)
+	res, err = io.ReadAll(conn)
 	if err != nil {
-		err = fmt.Errorf("Error whule receiving the data: %s", err.Error())
+		err = fmt.Errorf("error while receiving the data: %s", err.Error())
 		return
 	}
 
